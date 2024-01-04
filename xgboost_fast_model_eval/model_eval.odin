@@ -46,6 +46,8 @@ import "core:os"
 import "core:mem"
 import "core:strconv"
 import "core:slice"
+import "core:intrinsics"
+
 
 NUMBERS_STR : string : "-.0123456789"
 
@@ -712,7 +714,7 @@ xgb_predict :: proc ( xgb_model : ^XGB_Model_Eval, input_slice : []f32 ) -> f64 
        sum : f64 = 0.5 // 0.0
        // for _, tree_index in xgb_model.vec_trees {
        for tree_index in 0 ..< len( xgb_model.vec_trees ) {
-            start_node_index : u16 = 0
+            // start_node_index : u16 = 0
             
             // res := xgb_compute_tree( & xgb_model.vec_trees[ tree_index ],
             //                          start_node_index,
@@ -771,5 +773,330 @@ xgb_compute_tree_fast :: proc "c" ( model_tree : ^XGB_Tree, input_slice : []f32 
     }
 }
 
+// Optimized version for IPC 4 instructions per cycle.
+
+// Prediction function
+xgb_predict_IPC :: proc ( xgb_model : ^XGB_Model_Eval, input_slice : []f32, stride : int ) -> ( sum_1, sum_2, sum_3, sum_4 : f64 ) {
+    sum_1 = 0.5 // 0.0
+    sum_2 = 0.5
+    sum_3 = 0.5
+    sum_4 = 0.5
+
+    // Pre-fecthing the first tree from memory to cache.
+    // In this case it is alredy on the cache and not in RAM, but this is nice to know how to do it.
+    //  
+    // address := & xgb_model.vec_trees[ 0 ]
+    // ptr := rawptr( address )
+    // locality ::  3 /* high */
+    // intrinsics.prefetch_read_data( ptr, locality )
+
+    for tree_index in 0 ..< len( xgb_model.vec_trees ) {
+
+        // address := & xgb_model.vec_trees[ tree_index ]
+        // // ptr := rawptr(uintptr(address) + offset)
+        // ptr := rawptr( address )
+        // locality ::  3 /* high */
+        // intrinsics.prefetch_read_data( ptr, locality )
+             
+        res_1, res_2, res_3, res_4 := xgb_compute_tree_fast_IPC( & xgb_model.vec_trees[ tree_index ],
+                                            input_slice,
+                                            stride )
+
+        sum_1 += f64( res_1 )
+        sum_2 += f64( res_2 )
+        sum_3 += f64( res_3 )
+        sum_4 += f64( res_4 )
+    }
+
+    return sum_1, sum_2, sum_3, sum_4
+}
+
+// This alredy works with the "c" function call format without passing the automatic context
+xgb_compute_tree_fast_IPC :: /* #force_inline */ proc "c" ( model_tree : ^XGB_Tree, input_slice : []f32, stride : int ) ->
+           ( res_1, res_2, res_3, res_4 : f32 ) {    
+
+    // Traverse the tree in a tight FOR loop.
+
+    NO_RESULT_YET : f32 = max( f32 )
+
+    // NO_RESULT_YET : f32 = math.F32_MAX
+
+    res_1 = NO_RESULT_YET
+    res_2 = NO_RESULT_YET
+    res_3 = NO_RESULT_YET
+    res_4 = NO_RESULT_YET
+
+    node_index_1 : u16 = 0
+    node_index_2 : u16 = 0
+    node_index_3 : u16 = 0
+    node_index_4 : u16 = 0
+
+    stride_1 := 0
+    stride_2 := stride
+    stride_3 := 2 * stride
+    stride_4 := 3 * stride
+
+    for {
+
+        if res_1 == NO_RESULT_YET {
+            input_index_1 := model_tree.vec_in_pid_n_or_leaf[ node_index_1 ]
+            if input_index_1 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_1 + int( input_index_1 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_1 ]  {
+                    node_index_1 = model_tree.vec_jump_cmp_lt[ node_index_1 ]
+                } else {
+                    node_index_1 = model_tree.vec_jump_cmp_ge[ node_index_1 ]
+                }
+            } else {
+                res_1 = model_tree.vec_in_cmp_or_leaf_value[ node_index_1 ]
+            }
+        }
+        
+        if res_2 == NO_RESULT_YET {
+            input_index_2 := model_tree.vec_in_pid_n_or_leaf[ node_index_2 ]
+            if input_index_2 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_2 + int( input_index_2 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_2 ]  {
+                    node_index_2 = model_tree.vec_jump_cmp_lt[ node_index_2 ]
+                } else {
+                    node_index_2 = model_tree.vec_jump_cmp_ge[ node_index_2 ]
+                }
+            } else {
+                res_2 = model_tree.vec_in_cmp_or_leaf_value[ node_index_2 ]
+            }
+        }
+
+        if res_3 == NO_RESULT_YET {
+            input_index_3 := model_tree.vec_in_pid_n_or_leaf[ node_index_3 ]
+            if input_index_3 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_3 + int( input_index_3 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_3 ]  {
+                    node_index_3 = model_tree.vec_jump_cmp_lt[ node_index_3 ]
+                } else {
+                    node_index_3 = model_tree.vec_jump_cmp_ge[ node_index_3 ]
+                }
+            } else {
+                res_3 = model_tree.vec_in_cmp_or_leaf_value[ node_index_3 ]
+            }
+        }
+
+        if res_4 == NO_RESULT_YET {
+            input_index_4 := model_tree.vec_in_pid_n_or_leaf[ node_index_4 ]
+            if input_index_4 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_4 + int( input_index_4 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_4 ]  {
+                    node_index_4 = model_tree.vec_jump_cmp_lt[ node_index_4 ]
+                } else {
+                    node_index_4 = model_tree.vec_jump_cmp_ge[ node_index_4 ]
+                }
+            } else {
+                res_4 = model_tree.vec_in_cmp_or_leaf_value[ node_index_4 ]
+            }
+        }
+
+        if res_1 != NO_RESULT_YET && 
+           res_2 != NO_RESULT_YET &&
+           res_3 != NO_RESULT_YET &&
+           res_4 != NO_RESULT_YET {
+            break
+        }
+    } // for
+    
+    return res_1, res_2, res_3, res_4        
+}
 
 
+// Optimized version for IPC 8 instructions per cycle.
+
+// Prediction function
+xgb_predict_IPC_2 :: proc ( xgb_model : ^XGB_Model_Eval, input_slice : []f32, stride : int ) ->
+           ( sum_1, sum_2, sum_3, sum_4, sum_5, sum_6, sum_7, sum_8 : f64 ) {
+    sum_1 = 0.5 // 0.0
+    sum_2 = 0.5
+    sum_3 = 0.5
+    sum_4 = 0.5
+    sum_5 = 0.5
+    sum_6 = 0.5
+    sum_7 = 0.5
+    sum_8 = 0.5
+
+    for tree_index in 0 ..< len( xgb_model.vec_trees ) {
+             
+         res_1, res_2, res_3, res_4, 
+         res_5, res_6, res_7, res_8 := xgb_compute_tree_fast_IPC_2( & xgb_model.vec_trees[ tree_index ],
+                                            input_slice,
+                                            stride )
+
+         sum_1 += f64( res_1 )
+         sum_2 += f64( res_2 )
+         sum_3 += f64( res_3 )
+         sum_4 += f64( res_4 )
+
+         sum_5 += f64( res_5 )
+         sum_6 += f64( res_6 )
+         sum_7 += f64( res_7 )
+         sum_8 += f64( res_8 )
+
+    }
+
+    return sum_1, sum_2, sum_3, sum_4, sum_5, sum_6, sum_7, sum_8
+}
+
+// This alredy works with the "c" function call format without passing the automatic context
+xgb_compute_tree_fast_IPC_2 :: proc "c" ( model_tree : ^XGB_Tree, input_slice : []f32, stride : int ) ->
+            ( res_1, res_2, res_3, res_4, res_5, res_6, res_7, res_8 : f32 ) {    
+
+    // Traverse the tree in a tight FOR loop.
+
+    NO_RESULT_YET : f32 = max( f32 )
+
+    res_1 = NO_RESULT_YET
+    res_2 = NO_RESULT_YET
+    res_3 = NO_RESULT_YET
+    res_4 = NO_RESULT_YET
+
+    res_5 = NO_RESULT_YET
+    res_6 = NO_RESULT_YET
+    res_7 = NO_RESULT_YET
+    res_8 = NO_RESULT_YET
+
+
+    node_index_1 : u16 = 0
+    node_index_2 : u16 = 0
+    node_index_3 : u16 = 0
+    node_index_4 : u16 = 0
+
+    node_index_5 : u16 = 0
+    node_index_6 : u16 = 0
+    node_index_7 : u16 = 0
+    node_index_8 : u16 = 0
+
+
+    stride_1 := 0
+    stride_2 := stride
+    stride_3 := 2 * stride
+    stride_4 := 3 * stride
+
+    stride_5 := 4 * stride
+    stride_6 := 5 * stride
+    stride_7 := 6 * stride
+    stride_8 := 7 * stride
+
+
+    for {
+        if res_1 != NO_RESULT_YET && 
+           res_2 != NO_RESULT_YET &&
+           res_3 != NO_RESULT_YET &&
+           res_4 != NO_RESULT_YET &&
+           res_5 != NO_RESULT_YET &&
+           res_6 != NO_RESULT_YET &&
+           res_7 != NO_RESULT_YET &&
+           res_8 != NO_RESULT_YET
+           {
+            break
+        }
+
+        if res_1 == NO_RESULT_YET {
+            input_index_1 := model_tree.vec_in_pid_n_or_leaf[ node_index_1 ]
+            if input_index_1 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_1 + int( input_index_1 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_1 ]  {
+                    node_index_1 = model_tree.vec_jump_cmp_lt[ node_index_1 ]
+                } else {
+                    node_index_1 = model_tree.vec_jump_cmp_ge[ node_index_1 ]
+                }
+            } else {
+                res_1 = model_tree.vec_in_cmp_or_leaf_value[ node_index_1 ]
+            }
+        }
+        
+        if res_2 == NO_RESULT_YET {
+            input_index_2 := model_tree.vec_in_pid_n_or_leaf[ node_index_2 ]
+            if input_index_2 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_2 + int( input_index_2 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_2 ]  {
+                    node_index_2 = model_tree.vec_jump_cmp_lt[ node_index_2 ]
+                } else {
+                    node_index_2 = model_tree.vec_jump_cmp_ge[ node_index_2 ]
+                }
+            } else {
+                res_2 = model_tree.vec_in_cmp_or_leaf_value[ node_index_2 ]
+            }
+        }
+
+        if res_3 == NO_RESULT_YET {
+            input_index_3 := model_tree.vec_in_pid_n_or_leaf[ node_index_3 ]
+            if input_index_3 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_3 + int( input_index_3 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_3 ]  {
+                    node_index_3 = model_tree.vec_jump_cmp_lt[ node_index_3 ]
+                } else {
+                    node_index_3 = model_tree.vec_jump_cmp_ge[ node_index_3 ]
+                }
+            } else {
+                res_3 = model_tree.vec_in_cmp_or_leaf_value[ node_index_3 ]
+            }
+        }
+
+        if res_4 == NO_RESULT_YET {
+            input_index_4 := model_tree.vec_in_pid_n_or_leaf[ node_index_4 ]
+            if input_index_4 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_4 + int( input_index_4 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_4 ]  {
+                    node_index_4 = model_tree.vec_jump_cmp_lt[ node_index_4 ]
+                } else {
+                    node_index_4 = model_tree.vec_jump_cmp_ge[ node_index_4 ]
+                }
+            } else {
+                res_4 = model_tree.vec_in_cmp_or_leaf_value[ node_index_4 ]
+            }
+        }
+
+        if res_5 == NO_RESULT_YET {
+            input_index_5 := model_tree.vec_in_pid_n_or_leaf[ node_index_5 ]
+            if input_index_5 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_5 + int( input_index_5 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_5 ]  {
+                    node_index_5 = model_tree.vec_jump_cmp_lt[ node_index_5 ]
+                } else {
+                    node_index_5 = model_tree.vec_jump_cmp_ge[ node_index_5 ]
+                }
+            } else {
+                res_5 = model_tree.vec_in_cmp_or_leaf_value[ node_index_5 ]
+            }
+        }
+
+        if res_6 == NO_RESULT_YET {
+            input_index_6 := model_tree.vec_in_pid_n_or_leaf[ node_index_6 ]
+            if input_index_6 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_6 + int( input_index_6 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_6 ]  {
+                    node_index_6 = model_tree.vec_jump_cmp_lt[ node_index_6 ]
+                } else {
+                    node_index_6 = model_tree.vec_jump_cmp_ge[ node_index_6 ]
+                }
+            } else {
+                res_6 = model_tree.vec_in_cmp_or_leaf_value[ node_index_6 ]
+            }
+        }
+
+        if res_7 == NO_RESULT_YET {
+            input_index_7 := model_tree.vec_in_pid_n_or_leaf[ node_index_7 ]
+            if input_index_7 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_7 + int( input_index_7 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_7 ]  {
+                    node_index_7 = model_tree.vec_jump_cmp_lt[ node_index_7 ]
+                } else {
+                    node_index_7 = model_tree.vec_jump_cmp_ge[ node_index_7 ]
+                }
+            } else {
+                res_7 = model_tree.vec_in_cmp_or_leaf_value[ node_index_7 ]
+            }
+        }
+
+        if res_8 == NO_RESULT_YET {
+            input_index_8 := model_tree.vec_in_pid_n_or_leaf[ node_index_8 ]
+            if input_index_8 != XGB_TREE_NODE_LEAF {
+                if input_slice[ stride_8 + int( input_index_8 ) ] < model_tree.vec_in_cmp_or_leaf_value[ node_index_8 ]  {
+                    node_index_8 = model_tree.vec_jump_cmp_lt[ node_index_8 ]
+                } else {
+                    node_index_8 = model_tree.vec_jump_cmp_ge[ node_index_8 ]
+                }
+            } else {
+                res_8 = model_tree.vec_in_cmp_or_leaf_value[ node_index_8 ]
+            }
+        }
+
+    } // for
+    
+    return res_1, res_2, res_3, res_4, res_5, res_6, res_7, res_8         
+}
