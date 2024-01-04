@@ -26,7 +26,8 @@ target_predicted_value_correct_2 : 41.766
 Execution duration xme.xgb_predict() [2] : 2.45µs 
 predicted_value_2 : 41.766
 
-Execution duration xme.xgb_predict_IPC() [2] 4 instruction per cycle, mean time 80 elements : 63.71µs each element : 796.375 nano seconds 
+Execution duration xme.xgb_predict_IPC() [2] 4 instruction per cycle,
+mean time 80 elements : 63.71µs each element : 796.375 nano seconds 
 pred_1 : 41.766
 pred_2 : 41.766
 pred_3 : 41.766
